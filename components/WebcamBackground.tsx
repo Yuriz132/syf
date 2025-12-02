@@ -16,14 +16,20 @@ const WebcamBackground: React.FC<WebcamBackgroundProps> = ({ onHandData }) => {
 
   useEffect(() => {
     let isMounted = true;
+    let timeoutId: any;
 
     const initMediaPipe = async () => {
       try {
+        // Set a timeout to report if loading takes too long
+        timeoutId = setTimeout(() => {
+          if (isMounted) setError("Loading timed out. Check network connection.");
+        }, 15000);
+
         setStatus('Loading Vision Models...');
         
-        // Use 'latest' to avoid version mismatches with the npm package
+        // Use a specific, stable version for the WASM backend to avoid mismatches
         const vision = await FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm"
         );
         
         if (!isMounted) return;
@@ -38,12 +44,15 @@ const WebcamBackground: React.FC<WebcamBackgroundProps> = ({ onHandData }) => {
         });
 
         if (isMounted) {
+            clearTimeout(timeoutId);
             setStatus('Starting Camera...');
             await startWebcam();
         }
       } catch (err: any) {
         console.error("MediaPipe Init Error:", err);
         if (isMounted) setError(`AI Init Failed: ${err.message || err}`);
+      } finally {
+        if (timeoutId) clearTimeout(timeoutId);
       }
     };
 
@@ -77,13 +86,18 @@ const WebcamBackground: React.FC<WebcamBackgroundProps> = ({ onHandData }) => {
 
     return () => {
       isMounted = false;
+      if (timeoutId) clearTimeout(timeoutId);
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
       if (videoRef.current && videoRef.current.srcObject) {
           const stream = videoRef.current.srcObject as MediaStream;
           stream.getTracks().forEach(track => track.stop());
       }
       if (handLandmarkerRef.current) {
-          handLandmarkerRef.current.close();
+          try {
+            handLandmarkerRef.current.close();
+          } catch(e) {
+            console.error("Error closing landmarker", e);
+          }
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -168,16 +182,20 @@ const WebcamBackground: React.FC<WebcamBackgroundProps> = ({ onHandData }) => {
 
   return (
     <>
-      {/* Loading / Error Overlay */}
+      {/* Loading / Error Overlay - Added Inline Styles for Safety */}
       {(status || error) && (
-        <div className="absolute top-0 left-0 w-full h-full flex items-center justify-center z-50 bg-black/80 text-white pointer-events-none">
-            <div className="text-center">
+        <div 
+          className="absolute top-0 left-0 w-full h-full flex items-center justify-center bg-black/80 z-50"
+          style={{ color: 'white', backgroundColor: 'rgba(0,0,0,0.9)', zIndex: 100 }}
+        >
+            <div className="text-center p-4">
                 {error ? (
-                    <div className="text-red-500 font-bold text-xl mb-2">Error</div>
+                    <div style={{ color: '#ff4444', fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '10px' }}>Error</div>
                 ) : (
-                    <div className="animate-pulse text-cyan-400 font-bold text-xl mb-2">Initialize</div>
+                    <div style={{ color: '#00ffff', fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '10px' }} className="animate-pulse">Initialize</div>
                 )}
-                <p>{error || status}</p>
+                <p style={{ fontSize: '1rem' }}>{error || status}</p>
+                {error && <button onClick={() => window.location.reload()} style={{ marginTop: '20px', padding: '8px 16px', background: '#333', border: '1px solid white', cursor: 'pointer', color: 'white' }}>Retry</button>}
             </div>
         </div>
       )}
