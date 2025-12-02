@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import { HandResult } from '../types';
 
@@ -11,43 +11,80 @@ const WebcamBackground: React.FC<WebcamBackgroundProps> = ({ onHandData }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const handLandmarkerRef = useRef<HandLandmarker | null>(null);
   const requestRef = useRef<number | null>(null);
+  const [status, setStatus] = useState<string>('Initializing AI...');
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const initMediaPipe = async () => {
-      const vision = await FilesetResolver.forVisionTasks(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm"
-      );
-      
-      handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
-          delegate: "GPU"
-        },
-        runningMode: "VIDEO",
-        numHands: 2
-      });
+    let isMounted = true;
 
-      startWebcam();
+    const initMediaPipe = async () => {
+      try {
+        setStatus('Loading Vision Models...');
+        
+        // Use 'latest' to avoid version mismatches with the npm package
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+        );
+        
+        if (!isMounted) return;
+
+        handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+            delegate: "GPU"
+          },
+          runningMode: "VIDEO",
+          numHands: 2
+        });
+
+        if (isMounted) {
+            setStatus('Starting Camera...');
+            await startWebcam();
+        }
+      } catch (err: any) {
+        console.error("MediaPipe Init Error:", err);
+        if (isMounted) setError(`AI Init Failed: ${err.message || err}`);
+      }
     };
 
     const startWebcam = async () => {
       try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            throw new Error("Camera API not available. Please use HTTPS.");
+        }
+
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { width: 1280, height: 720, facingMode: 'user' }
         });
+        
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          videoRef.current.addEventListener('loadeddata', predictWebcam);
+          // Wait for data to be loaded
+          videoRef.current.onloadeddata = () => {
+             if (isMounted) {
+                 setStatus(''); // Clear loading text
+                 predictWebcam();
+             }
+          };
         }
-      } catch (err) {
-        console.error("Error accessing webcam:", err);
+      } catch (err: any) {
+        console.error("Camera Error:", err);
+        if (isMounted) setError(`Camera Error: ${err.message || 'Permission denied'}`);
       }
     };
 
     initMediaPipe();
 
     return () => {
+      isMounted = false;
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
+      if (videoRef.current && videoRef.current.srcObject) {
+          const stream = videoRef.current.srcObject as MediaStream;
+          stream.getTracks().forEach(track => track.stop());
+      }
+      if (handLandmarkerRef.current) {
+          handLandmarkerRef.current.close();
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -55,20 +92,24 @@ const WebcamBackground: React.FC<WebcamBackgroundProps> = ({ onHandData }) => {
   const predictWebcam = async () => {
     if (!handLandmarkerRef.current || !videoRef.current || !canvasRef.current) return;
     
-    // Ensure video is playing
-    if (videoRef.current.currentTime > 0) {
+    // Ensure video is playing and has data
+    if (videoRef.current.currentTime > 0 && !videoRef.current.paused && !videoRef.current.ended) {
       const startTimeMs = performance.now();
-      const results = handLandmarkerRef.current.detectForVideo(videoRef.current, startTimeMs);
+      try {
+          const results = handLandmarkerRef.current.detectForVideo(videoRef.current, startTimeMs);
 
-      // Pass data up for 3D interaction
-      onHandData({
-          landmarks: results.landmarks,
-          worldLandmarks: results.worldLandmarks,
-          handedness: results.handedness
-      });
+          // Pass data up for 3D interaction
+          onHandData({
+              landmarks: results.landmarks,
+              worldLandmarks: results.worldLandmarks,
+              handedness: results.handedness
+          });
 
-      // Draw 2D Overlay
-      drawLandmarks(results.landmarks);
+          // Draw 2D Overlay
+          drawLandmarks(results.landmarks);
+      } catch (e) {
+          console.warn("Detection error:", e);
+      }
     }
     
     requestRef.current = requestAnimationFrame(predictWebcam);
@@ -82,8 +123,12 @@ const WebcamBackground: React.FC<WebcamBackgroundProps> = ({ onHandData }) => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    // Match canvas size to video size
+    if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+    }
+    
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
     // Mirror transform to match the mirrored CSS of video
@@ -123,6 +168,20 @@ const WebcamBackground: React.FC<WebcamBackgroundProps> = ({ onHandData }) => {
 
   return (
     <>
+      {/* Loading / Error Overlay */}
+      {(status || error) && (
+        <div className="absolute top-0 left-0 w-full h-full flex items-center justify-center z-50 bg-black/80 text-white pointer-events-none">
+            <div className="text-center">
+                {error ? (
+                    <div className="text-red-500 font-bold text-xl mb-2">Error</div>
+                ) : (
+                    <div className="animate-pulse text-cyan-400 font-bold text-xl mb-2">Initialize</div>
+                )}
+                <p>{error || status}</p>
+            </div>
+        </div>
+      )}
+
       {/* Video is hidden or behind, we use canvas to verify alignment or just show video directly */}
       <video 
         ref={videoRef} 
