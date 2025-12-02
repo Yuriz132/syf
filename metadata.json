@@ -1,0 +1,7 @@
+{
+  "name": "Gesture Particle System",
+  "description": "Real-time 3D particle system interacting with hand gestures using MediaPipe and Three.js",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
